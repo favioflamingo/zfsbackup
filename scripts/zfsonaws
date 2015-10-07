@@ -1,5 +1,9 @@
 #!/usr/bin/perl -wT
 
+use strict;
+use warnings;
+use ZFSonAWS;
+
 $ENV{'PATH'} = '/bin:/usr/bin:/sbin:/usr/local/bin';
 delete @ENV{'IFS', 'CDPATH', 'ENV', 'BASH_ENV'};
 

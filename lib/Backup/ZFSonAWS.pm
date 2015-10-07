@@ -238,6 +238,96 @@ sub run_backup {
 }
 
 
+=pod
+
+Usage: ./recover.pl /tmp/checksumfile /tmp/snapshotfile 
+
+
+=cut
+
+sub get_options {
+	my @args = @_;
+	my $data = {};
+	die " no clear text key and checksum file" unless -f $args[0];
+	if($args[0] =~ m/^(.*)$/){
+		$data->{'checksumfile'} = $args[0];
+	}
+	die " no cipher text zfs snapshot" unless defined $args[1];
+	if($args[1] =~ m/^(.*)$/){
+		$data->{'snapshotfile'} = $args[1];
+	}
+	
+	return $data;
+}
+
+
+sub extract_key_checksum {
+	my $filepath = shift;
+	open(my $fh, '<', $filepath ) || die "cannot open cleartext file";
+	my $x = '';
+	my $buf;
+	my $n = 0;
+	my $size = 0;
+	$n = read($fh,$buf,4);
+	$size = unpack('L',$buf);
+	$n = read($fh,$buf,$size);
+	die "bad size" unless $n == $size;
+	my $checksum = $buf;
+	
+	$n = read($fh,$buf,4);
+	$size = unpack('L',$buf);
+	$n = read($fh,$buf,$size);
+	die "bad size" unless $n == $size;
+	my $key = $buf;
+	
+	close($fh);
+	return ($checksum,$key);
+}
+
+sub get_symmetric_cipher{
+	my $key = shift;
+	return Crypt::CBC->new(-key => $key, -cipher => 'Blowfish');
+}
+
+# 
+sub decrypt_full_backup{
+	my $full_path = shift;
+	my $checksum = shift;
+	my $key = shift;
+	my $cipher = get_symmetric_cipher($key);
+	$cipher->start('decrypting');
+	my $sha = Digest::SHA->new(256);
+	my $buf;
+	open(my $fh,'<',$full_path) || die "cannot open file";
+	while(sysread($fh,$buf,8192)){
+		$sha->add($buf);
+		syswrite(STDOUT,$cipher->crypt($buf));
+	}
+	close($fh);
+	syswrite(STDOUT,$cipher->finish());
+		
+}
+
+
+#my ($checksum,$key) = extract_key_checksum('/tmp/unretard.txt');
+
+#print STDERR "[".length($checksum).",".length($key)."]"
+
+
+
+my $options = get_options(@ARGV);
+
+#my $xo = Data::Dumper::Dumper($options);
+#print STDERR $xo;
+
+ ($options->{'checksum'},$options->{'key'}) = extract_key_checksum($options->{'checksumfile'});
+my $xo = Data::Dumper::Dumper($options);
+print STDERR $xo;
+
+print STDERR "Now decrypting the full backup\n";
+decrypt_full_backup($options->{'snapshotfile'},$options->{'checksum'},$options->{'key'});
+
+
 
 
 
@@ -289,43 +379,22 @@ L<http://search.cpan.org/dist/Backup-ZFSonAWS/>
 
 =head1 LICENSE AND COPYRIGHT
 
-Copyright 2015 Joel De Jesus.
+    ZFSonAWS is a program that automates backing up zfs snapshots onto AWS's S3.
+    Copyright (C) 2015  Joel De Jesus
 
-This program is free software; you can redistribute it and/or modify it
-under the terms of the the Artistic License (2.0). You may obtain a
-copy of the full license at:
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
 
-L<http://www.perlfoundation.org/artistic_license_2_0>
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
 
-Any use, modification, and distribution of the Standard or Modified
-Versions is governed by this Artistic License. By using, modifying or
-distributing the Package, you accept this license. Do not use, modify,
-or distribute the Package, if you do not accept this license.
-
-If your Modified Version has been derived from a Modified Version made
-by someone other than you, you are nevertheless required to ensure that
-your Modified Version complies with the requirements of this license.
-
-This license does not grant you the right to use any trademark, service
-mark, tradename, or logo of the Copyright Holder.
-
-This license includes the non-exclusive, worldwide, free-of-charge
-patent license to make, have made, use, offer to sell, sell, import and
-otherwise transfer the Package with respect to any patent claims
-licensable by the Copyright Holder that are necessarily infringed by the
-Package. If you institute patent litigation (including a cross-claim or
-counterclaim) against any party alleging that the Package constitutes
-direct or contributory patent infringement, then this Artistic License
-to you shall terminate on the date that such litigation is filed.
-
-Disclaimer of Warranty: THE PACKAGE IS PROVIDED BY THE COPYRIGHT HOLDER
-AND CONTRIBUTORS "AS IS' AND WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES.
-THE IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
-PURPOSE, OR NON-INFRINGEMENT ARE DISCLAIMED TO THE EXTENT PERMITTED BY
-YOUR LOCAL LAW. UNLESS REQUIRED BY LAW, NO COPYRIGHT HOLDER OR
-CONTRIBUTOR WILL BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, OR
-CONSEQUENTIAL DAMAGES ARISING IN ANY WAY OUT OF THE USE OF THE PACKAGE,
-EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+    You should have received a copy of the GNU General Public License along
+    with this program; if not, write to the Free Software Foundation, Inc.,
+    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
 
 =cut
