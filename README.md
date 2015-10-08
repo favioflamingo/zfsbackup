@@ -30,8 +30,7 @@ To recover, just do step 3 inversely like the following:
 
 1. Download the snapshot from the s3 bucket to, say, /var/tmpbackup/snapshot.crypt
 2. Download the checksum file from s3, decrypt it somewhere and store the clear text file at, say, /var/tmpbackup/snapshot.checksum
-3. Run the following in bash:
-```bash
+3. Run the following in bash:```bash
 zfsonaws recover /var/tmpbackup/snapshot.checksum /var/tmpbackup/snapshot.crypt | bzcat - | zfs receive -F tank/newexample
 ```
 
@@ -44,12 +43,10 @@ For software requirements, the following are required:
   2. Have a bucket set up on S3
 1. bzcat and bzip2 to handle compression
 2. Have a location on which to temporarily store backup data. For example:
-  1. Create a file system for storing data temporarily 
-```bash
+  1. Create a file system for storing data temporarily ```bash
 zfs create -o mountpoint=/var/tmpbackup tank/tmpbackup
 ```
-  1. Make /var/tmpbackup unreadable to outside users 
-```bash
+  1. Make /var/tmpbackup unreadable to outside users ```bash
 chmod 0700 /var/tmpbackup
 ```
 4. Create a gpg keyring for the backup user (ie root) to encrypt the checksum file.
