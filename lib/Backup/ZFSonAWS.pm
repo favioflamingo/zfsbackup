@@ -57,7 +57,7 @@ Backup::ZFSonAWS->new({
 	'bucket' => 's3zfsbucket',
 	'tmppath' => '/var/backup',
 	'tmpfs' => 'tank/backup',
-	'recepient' => 'favio@example.com'
+	'recipient' => 'favio@example.com'
 });
 
 =cut
@@ -92,11 +92,11 @@ sub new {
 		die "no zfs file system to store images";
 	}
 	
-	if(defined $options->{'recepient'} && $options->{'recepient'} =~ m/^(.*)$/){
-		$this->{'recepient'} = $1;
+	if(defined $options->{'recipient'} && $options->{'recipient'} =~ m/^(.*)$/){
+		$this->{'recipient'} = $1;
 	}
 	else{
-		die "no gpg recepient provided";
+		die "no gpg recipient provided";
 	}
 	
 	return $this;
@@ -121,8 +121,8 @@ sub tmppath {
 	return shift->{'tmppath'};
 }
 
-sub recepient {
-	return shift->{'recepient'};
+sub recipient {
+	return shift->{'recipient'};
 }
 
 
@@ -229,7 +229,7 @@ sub encrypt_txt {
 	my $path = shift;
 	my $txt = shift;
 	# /usr/bin/gpg -r dejesus.joel@e-flamingo.jp --armor -o - -e -
-	open(my $fh, "|-",'/usr/bin/gpg','--batch','--yes','-r',$this->recepient,'--armor','-o',$path,'-e','-') || die "cannot do gpg";
+	open(my $fh, "|-",'/usr/bin/gpg','--batch','--yes','-r',$this->recipient,'--armor','-o',$path,'-e','-') || die "cannot do gpg";
 	syswrite($fh,$txt);
 	close($fh);
 }
