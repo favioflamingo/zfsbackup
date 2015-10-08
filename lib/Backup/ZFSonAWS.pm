@@ -211,12 +211,12 @@ sub extract_aws_content {
 	while(my $line = <$fh>){
 		# 2014-10-28 04:19:11   10486784 scooper-wiki_20141019D_964783120
 		if($line =~ m/incrementalzfsbackup(.*)_(\d{4})(\d{2})(\d{2})_(\d{4})(\d{2})(\d{2})/){
-			$data->{'incremental'}->{$1} = [] unless defined $data->{$1};
+			#$data->{'incremental'}->{$1} = [] unless defined $data->{$1};
 			#push(@{$data->{'incremental'}->{$1}},[$2,$3,$4,$5,$6,$7]);
 			$data->{'incremental'}->{$1}->{$2.$3.$4}->{$5.$6.$7} = 1;
 		}
 		elsif($line =~ m/fullzfsbackup(.*)_(\d{4})(\d{2})(\d{2})/){
-			$data->{'full'}->{$1} = [] unless defined $data->{$1};
+			#$data->{'full'}->{$1} = {} unless defined $data->{$1};
 			#push(@{$data->{'full'}->{$1}},[$2,$3,$4]);
 			$data->{'full'}->{$1}->{$2.$3.$4} = 1;
 		}
