@@ -290,35 +290,24 @@ sub cp_to_aws{
 	
 	my ($fpath,$s3path) = (shift,shift);
 	
+	die "file does not exist" unless -f $fpath;
+	
+	
 	my $pid = fork();
 	if($pid > 0){
-		print STDERR "Forking with pid=$pid to copy $s3path to aws";
+		print STDERR "Forking with pid=$pid to copy $fpath to aws at address s3://".$this->bucket."/$s3path\n";
 		$this->add_pid($pid);
 	}
 	elsif($pid == 0){
 		# child
-		exec('/usr/local/bin/aws','s3','cp',$fpath,'s3://'.$this->bucket.'/'.$s3path) || die "failed to run";
+		system('/usr/local/bin/aws','s3','cp',$fpath,'s3://'.$this->bucket.'/'.$s3path);
+		system('/bin/rm','-v',$fpath);
 		exit(0);
 	}
 	else{
 		die "cannot fork to do aws cp";
 	}
 	
-	my $oldpid = $pid;
-	$pid = fork();
-	if($pid > 0){
-		# parent
-		$this->add_pid($pid);
-	}
-	elsif($pid == 0){
-		# this child's reason for existence is to delete the file being sent to aws without holding up the cpu intensive encryption process.
-		waitpid($oldpid,0);
-		unlink($fpath);
-		exit(0);
-	}
-	else{
-		die "cannot fork to do aws cp";
-	}
 }
 
 =pod
@@ -327,7 +316,9 @@ sub cp_to_aws{
 
 Compress zfs with bzip2 -c
 
-Return a file handle, on which a checksum and encryption operation is to take place
+Return a file handle, on which a checksum and encryption operation is to take place.
+
+This implements the equivalent bash command: zfs send tank/example | bzip2 -c, and returns a file handle which reads the stdout from the bzip2 process.
 
 =cut
 
@@ -350,7 +341,8 @@ sub compress_zfs_send {
 		close($fhreturn);
 		
 		# child, stdout=$fhzfsout
-		STDOUT->fdopen( $fhzfsout, 'w' ) or die $!;
+		open (STDOUT, '>&', $fhzfsout);
+		#STDOUT->fdopen( $fhzfsout, 'w' ) or die $!;
 		exec('/sbin/zfs','send',$sendpath);
 		exit(1);
 	}
@@ -368,8 +360,11 @@ sub compress_zfs_send {
 		close($fhzfsout);
 		close($fhreturn);	
 		# stdin=$fsbzipin, stdout=$fhbzipout
-		STDIN->fdopen( $fhbzipin,  'r' ) or die $!;
-		STDOUT->fdopen( $fhbzipout, 'w' ) or die $!;
+		#open FILE, ">$file";
+		open (STDIN, '<&', $fhbzipin);
+		open (STDOUT, '>&', $fhbzipout);
+		#STDIN->fdopen( $fhbzipin,  'r' ) or die $!;
+		#STDOUT->fdopen( $fhbzipout, 'w' ) or die $!;
 		exec('/bin/bzip2','-c');
 		exit(1);
 	}
@@ -414,8 +409,9 @@ sub backup_full {
 	#encrypt_txt('/tmp/test',generate_random_key(32));
 	#open(my $fh, "-|",'/sbin/zfs','send',$zfspath.'@'.$date) || die "cannot do zfs backup";
 	my $fh = $this->compress_zfs_send($zfspath.'@'.$date);
+	die "bad file handle from compress_zfs_send" unless defined $fh && fileno($fh) > 0;
 	
-	open(my $fhout,'>',$this->tmppath.$fs.'_'.$date) || die "cannot write zfs to disk";
+	open(my $fhout,'>',$this->tmppath.'/'.$fs.'_'.$date) || die "cannot write zfs to disk";
 	my $i = 0;
 	my $buf;
 	my $sha = Digest::SHA->new(256);
@@ -440,14 +436,14 @@ sub backup_full {
 	print STDERR "Length of check sum for $fs is ".length($checksum)." and key length =".length($key)."\n";
 	# format= [4 bytes][checksum][4 bytes][key]
 	$this->encrypt_txt($this->tmppath.'/'.$fs.'_'.$date.'.gpg',pack('L',length($checksum )).$checksum.pack('L',length($key )).$key  );
-	cp_to_aws($this->tmppath.'/'.$fs.'_'.$date,$fs.'_'.$date);
-	cp_to_aws($this->tmppath.'/'.$fs.'_'.$date.'.gpg',$fs.'_'.$date.'.gpg');
+	$this->cp_to_aws($this->tmppath.'/'.$fs.'_'.$date,'fullzfsbackup'.$fs.'_'.$date);
+	$this->cp_to_aws($this->tmppath.'/'.$fs.'_'.$date.'.gpg','fullzfsbackup'.$fs.'_'.$date.'.gpg');
 
 }
 
 #incrementalzfsbackup(.*)_(\d{4})(\d{2})(\d{2})_(\d{4})(\d{2})(\d{2})
 
-sub calculate_full {
+sub do_full_snapshot {
 	my $this = shift;
 	my ($snaplocal,$snapaws) = (shift,shift);
 	my $data = [];
@@ -466,23 +462,7 @@ sub calculate_full {
 	return $data;
 }
 
-sub run_backup {
-	my $this = shift;
-	
-	# find out new full snapshots to take
-	my $required_full = $this->calculate_full(
-		$this->extract_zfs_snapshots(),
-		$this->extract_aws_content()
-	);
 
-
-	# find out new incremental snaphosts
-
-
-	# find out what snapshots to delete
-
-	
-}
 
 
 =pod
@@ -496,6 +476,7 @@ sub run_backup {
 sub get_options {
 	my @args = @_;
 	my $func = shift(@args);
+	die "no function defined" unless defined $func;
 	if($func eq 'recover'){
 		return get_options_recover(@args);
 	}
@@ -507,10 +488,7 @@ sub get_options {
 	}
 }
 
-sub get_options_backup {
-	my @args = @_;
-	
-	# read conf file
+sub read_config_file {
 	my $path = '/etc/zfsbackup/backup.conf';
 	die " no conf file exists" unless -f $path;
 	open(my $fh, '<',$path) || die "cannot open file";
@@ -518,24 +496,59 @@ sub get_options_backup {
 	while(<$fh>){ $x .= $_;}
 	close($fh);
 	
-	return JSON::XS::decode_json($x);
+	my $data = JSON::XS::decode_json($x);
+	$data->{'function'} = 'backup';
+	return $data;	
+}
+
+
+sub get_options_backup {
+	my @args = @_;
+	
+	# read conf file
+	return read_config_file();
 }
 
 
 sub get_options_recover {
 	my @args = @_;
-	my $data = {};
-	die " no clear text key and checksum file" unless -f $args[0];
+	my $data = read_config_file();
+	die " no clear text key and checksum file" unless defined $args[0] && -f $args[0];
 	if($args[0] =~ m/^(.*)$/){
 		$data->{'checksumfile'} = $args[0];
 	}
-	die " no cipher text zfs snapshot" unless defined $args[1];
+	die " no cipher text zfs snapshot" unless defined $args[1] && -f $args[1];
 	if($args[1] =~ m/^(.*)$/){
 		$data->{'snapshotfile'} = $args[1];
 	}
-	
+	$data->{'function'} = 'recover';
 	return $data;
 }
+
+
+sub run_backup {
+	my $this = shift;
+	
+	#my $xo = Data::Dumper::Dumper($this->extract_zfs_snapshots());
+	#my $yo = Data::Dumper::Dumper($this->extract_aws_content());
+	#die "XO=$xo\n\nYO=$yo";
+	
+	
+	# find out new full snapshots to take
+	my $required_full = $this->do_full_snapshot(
+		$this->extract_zfs_snapshots(),
+		$this->extract_aws_content()
+	);
+
+
+	# find out new incremental snaphosts
+
+
+	# find out what snapshots to delete
+
+}
+
+
 
 =pod
 
@@ -582,8 +595,11 @@ sub decrypt_snapshot{
 	my $this = shift;
 	my $checksumfile_path = shift;
 	my $snapshotfile_path = shift;
-	my ($checksum,$key) = extract_key_checksum($checksumfile_path);
-	return decrypt_snapshot_alpha($snapshotfile_path,$checksum,$key);
+	die "checksum file path does not exist" unless -f $checksumfile_path;
+	die "snapshot file path does not exist" unless -f $snapshotfile_path;
+	
+	my ($checksum,$key) = $this->extract_key_checksum($checksumfile_path);
+	return $this->decrypt_snapshot_alpha($snapshotfile_path,$checksum,$key);
 }
 
 
@@ -593,7 +609,7 @@ sub decrypt_snapshot_alpha{
 	my $full_path = shift;
 	my $checksum = shift;
 	my $key = shift;
-	my $cipher = get_symmetric_cipher($key);
+	my $cipher = $this->get_symmetric_cipher($key);
 	$cipher->start('decrypting');
 	my $sha = Digest::SHA->new(256);
 	my $buf;
@@ -606,7 +622,6 @@ sub decrypt_snapshot_alpha{
 	syswrite(STDOUT,$cipher->finish());
 		
 }
-
 
 
 =head1 AUTHOR
