@@ -1,13 +1,32 @@
-#!/usr/bin/perl -wT
+#!/usr/bin/perl
+
+# had to not use -T taint check because of taint errors with $cipher->crypt($buf) on about line 434
 
 use strict;
 use warnings;
-use ZFSonAWS;
+use Backup::ZFSonAWS;
 
 $ENV{'PATH'} = '/bin:/usr/bin:/sbin:/usr/local/bin';
 delete @ENV{'IFS', 'CDPATH', 'ENV', 'BASH_ENV'};
 
-print "Hello!\n";
+
+
+my $options = Backup::ZFSonAWS::get_options(@ARGV);
+require Data::Dumper;
+my $xo = Data::Dumper::Dumper($options);
+print STDERR "XO=".$xo."\n";
+
+my $obj = Backup::ZFSonAWS->new($options);
+
+if($options->{'function'} eq 'backup'){
+	print STDERR "Doing backup\n";
+	$obj->run_backup();
+}
+elsif($options->{'function'} eq 'recover'){
+	print STDERR "Doing recovery, decrypting snapshot now.\n";
+	$obj->decrypt_snapshot($options->{'checksumfile'},$options->{'snapshotfile'});
+}
+
 
 __END__
 
