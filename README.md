@@ -15,6 +15,7 @@ zfsonaws backup
 ```
 
 This command will do the following:
+
 1. Look for all snapshots that are of the following format: tank/example@20151001, ie filesystempath@YYYYMMDD.
 2. Check to see if that snapshot is in the s3 bucket.
 3. If not, then do the following:
@@ -27,6 +28,7 @@ This command will do the following:
 
 
 To recover, just do step 3 inversely like the following:
+
   a. Download the snapshot from the s3 bucket to, say, /var/tmpbackup/snapshot.crypt
   b. Download the checksum file from s3, decrypt it somewhere and store the clear text file at, say, /var/tmpbackup/snapshot.checksum
   c. Run the following in bash:
