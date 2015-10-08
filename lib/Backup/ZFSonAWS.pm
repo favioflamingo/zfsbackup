@@ -487,7 +487,8 @@ sub run_backup {
 
 =pod
 
-Usage: ./recover.pl /tmp/checksumfile /tmp/snapshotfile 
+
+---+ Command Line Arg Parsing
 
 
 =cut
@@ -536,8 +537,15 @@ sub get_options_recover {
 	return $data;
 }
 
+=pod
+
+---+ Recovery
+
+=cut
+
 
 sub extract_key_checksum {
+	my $this = shift;
 	my $filepath = shift;
 	open(my $fh, '<', $filepath ) || die "cannot open cleartext file";
 	my $x = '';
@@ -560,13 +568,28 @@ sub extract_key_checksum {
 	return ($checksum,$key);
 }
 
-sub get_symmetric_cipher{
-	my $key = shift;
-	return Crypt::CBC->new(-key => $key, -cipher => 'Blowfish');
+=pod
+
+---++ decrypt_snapshot
+
+Take a snapshot, decrypt it and print it to stdout.
+
+zfsonaws recover /tmp/checksumfile /tmp/fullzfsbackup_tank_example_20150101_20150110 | zfs recevie tank/example
+
+=cut 
+
+sub decrypt_snapshot{
+	my $this = shift;
+	my $checksumfile_path = shift;
+	my $snapshotfile_path = shift;
+	my ($checksum,$key) = extract_key_checksum($checksumfile_path);
+	return decrypt_snapshot_alpha($snapshotfile_path,$checksum,$key);
 }
 
-# 
-sub decrypt_full_backup{
+
+sub decrypt_snapshot_alpha{
+	my $this = shift;
+	
 	my $full_path = shift;
 	my $checksum = shift;
 	my $key = shift;
@@ -583,27 +606,6 @@ sub decrypt_full_backup{
 	syswrite(STDOUT,$cipher->finish());
 		
 }
-
-
-#my ($checksum,$key) = extract_key_checksum('/tmp/unretard.txt');
-
-#print STDERR "[".length($checksum).",".length($key)."]"
-
-
-
-my $options = get_options(@ARGV);
-
-#my $xo = Data::Dumper::Dumper($options);
-#print STDERR $xo;
-
- ($options->{'checksum'},$options->{'key'}) = extract_key_checksum($options->{'checksumfile'});
-my $xo = Data::Dumper::Dumper($options);
-print STDERR $xo;
-
-print STDERR "Now decrypting the full backup\n";
-decrypt_full_backup($options->{'snapshotfile'},$options->{'checksum'},$options->{'key'});
-
-
 
 
 
