@@ -19,7 +19,8 @@ WriteMakefile(
         'Crypt::OpenSSL::AES',
         'Digest::SHA',
         'Data::Dumper',
-        'Digest::SHA'
+        'Digest::SHA',
+        'JSON::XS'
     },
     'EXE_FILES' => [
 		'scripts/zfsonaws'

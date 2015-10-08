@@ -3,6 +3,11 @@ package Backup::ZFSonAWS;
 use 5.006;
 use strict;
 use warnings FATAL => 'all';
+use IO::Handle;
+use Data::Dumper;
+use Crypt::CBC;
+use Digest::SHA qw(sha256_hex);
+use JSON::XS;
 
 =head1 NAME
 
@@ -47,17 +52,125 @@ Usage: zfsbackup bucketname
 
 This command assumes that there is a place for temporary file storage called "/var/backup", which is the mountpoint for a filesystem that does not get backed up.
 
+
+Backup::ZFSonAWS->new({
+	'bucket' => 's3zfsbucket',
+	'tmppath' => '/var/backup',
+	'tmpfs' => 'tank/backup',
+	'recepient' => 'favio@example.com'
+});
+
 =cut
 
 
+sub new {
+	my $package = shift;
+	my $options = shift;
+	my $this = {};
+	bless($this,$package);
+	#### check inputs
+	# bucket
+	if(defined $options->{'bucket'} && $options->{'bucket'} =~ m/^([0-9a-zA-Z\-]+)$/){
+		$this->{'bucket'} = $1;
+	}
+	else{
+		die "no bucket";
+	}
+	if(defined $options->{'tmppath'} && $options->{'tmppath'} =~ m/^(.*)$/){
+		$this->{'tmppath'} = $1;
+	}
+	else{
+		die "bad format for tmppath";
+	}
+	unless(-d $this->{'tmppath'}){
+		die "directory does not exist for tmppath";
+	}
+	if(defined $options->{'tmpfs'} && $options->{'tmpfs'} =~ m/^(.*)$/){
+		$this->{'tmpfs'} = $1;
+	}
+	else{
+		die "no zfs file system to store images";
+	}
+	
+	if(defined $options->{'recepient'} && $options->{'recepient'} =~ m/^(.*)$/){
+		$this->{'recepient'} = $1;
+	}
+	else{
+		die "no gpg recepient provided";
+	}
+	
+	return $this;
+}
 
-my $bucket = $ARGV[0];
-my $recepient = $ARGV[1];
-die "no proper args" unless defined $bucket && $recepient;
-my $tmp_path = '/var/backup';
-my $varbackup = 'storage-space/tmpbackup';
-# aws s3 ls s3://putS3BucketHeres
-my @awspids;
+
+=pod
+
+---+ Getters/Setters
+
+=cut
+
+sub bucket {
+	return shift->{'bucket'};
+}
+
+sub tmpfs {
+	return shift->{'tmpfs'};
+}
+
+sub tmppath {
+	return shift->{'tmppath'};
+}
+
+sub recepient {
+	return shift->{'recepient'};
+}
+
+
+sub add_pid {
+	my $this = shift;
+	my $pid = shift;
+	if( defined $pid && $pid =~ m/^(\d+)$/){
+		$pid = $1;
+	}
+	unless(defined $this->{'children'}){
+		$this->{'children'} = {};
+	}
+	
+	$this->{'children'}->{$pid} = 1;
+	return scalar(keys %{$this->{'children'}});
+}
+
+sub remove_pid {
+	my $this = shift;
+	my $pid = shift;
+	delete $this->{'children'}->{$pid};
+}
+
+
+=pod
+
+---+ Main Subroutines
+
+
+=cut
+
+=pod
+
+--++ wait_for_children()
+
+When it is time to kill this object, we need to wait for all child processes to exit.
+
+=cut
+
+sub wait_for_children{
+	my $this = shift;
+	while(scalar(@{$this->{'children'}}) > 0){
+		my $latestpid = shift(@{$this->{'children'}});
+		warn "Waiting for $latestpid to exit";
+		waitpid($latestpid,0);
+	}
+	warn "All children have exited";
+}
 
 
 =pod
@@ -69,6 +182,8 @@ Run zfs list -t snapshot and get a list of all the snapshots.
 =cut
 
 sub extract_zfs_snapshots {
+	my $this = shift;
+	my $varbackup = $this->tmpfs;
 	my $pid = open(my $fh, "-|", '/sbin/zfs','list','-t','snapshot') || die "cannot extract zfs stuff";
 	my $data = {};
 	while(my $line = <$fh>){
@@ -88,7 +203,9 @@ sub extract_zfs_snapshots {
 }
 
 sub extract_aws_content {
-	my $pid = open(my $fh,"-|",'/usr/local/bin/aws','s3','ls','s3://'.$bucket) || die "cannot extract aws stuff";
+	my $this = shift;
+	
+	my $pid = open(my $fh,"-|",'/usr/local/bin/aws','s3','ls','s3://'.$this->bucket) || die "cannot extract aws stuff";
 	my $data = {'incremental' => {},'full' => {}};
 	my $previous = [];
 	while(my $line = <$fh>){
@@ -108,15 +225,25 @@ sub extract_aws_content {
 }
 
 sub encrypt_txt {
+	my $this = shift;
 	my $path = shift;
 	my $txt = shift;
 	# /usr/bin/gpg -r dejesus.joel@e-flamingo.jp --armor -o - -e -
-	open(my $fh, "|-",'/usr/bin/gpg','--batch','--yes','-r',$recepient,'--armor','-o',$path,'-e','-') || die "cannot do gpg";
+	open(my $fh, "|-",'/usr/bin/gpg','--batch','--yes','-r',$this->recepient,'--armor','-o',$path,'-e','-') || die "cannot do gpg";
 	syswrite($fh,$txt);
 	close($fh);
 }
 
+=pod
+
+---++ generate_random_key(32)
+
+In bytes, say how many random bytes you want from /dev/random
+
+=cut
+
 sub generate_random_key {
+	my $this = shift;
 	my $total = shift;
 	$total ||= 32;
 	open(my $fh,'<','/dev/random') || die "cannot read from /dev/random";
@@ -128,27 +255,64 @@ sub generate_random_key {
 		$num .= $buf;
 	}
 	close($fh);
+	# untaint
 	if($num =~ m/^(.*)$/){
 		$num = $1;
 	}
 	return $num;
 }
 
+=pod
+
+---++ get_symmetric_cipher
+
+The cipher is from Crypt::OpenSSL::AES which is a magnitude faster than pure perl implementations.
+
+=cut
+
 sub get_symmetric_cipher{
+	my $this = shift;
+	
 	my $key = shift;
 	return Crypt::CBC->new(-key => $key, -cipher => 'Crypt::OpenSSL::AES');
 }
 
+=pod
+
+---++ cp_to_aws($filepath,$s3path)
+
+Copy files from the local disk to your Amazon S3 bucket.  This subroutine utilitzes the aws cli program.
+
+=cut
+
 sub cp_to_aws{
+	my $this = shift;
+	
 	my ($fpath,$s3path) = (shift,shift);
 	
 	my $pid = fork();
 	if($pid > 0){
 		print STDERR "Forking with pid=$pid to copy $s3path to aws";
+		$this->add_pid($pid);
 	}
 	elsif($pid == 0){
 		# child
-		system('/usr/local/bin/aws','s3','cp',$fpath,'s3://'.$bucket.'/'.$s3path) || die "failed to run";
+		exec('/usr/local/bin/aws','s3','cp',$fpath,'s3://'.$this->bucket.'/'.$s3path) || die "failed to run";
+		exit(0);
+	}
+	else{
+		die "cannot fork to do aws cp";
+	}
+	
+	my $oldpid = $pid;
+	$pid = fork();
+	if($pid > 0){
+		# parent
+		$this->add_pid($pid);
+	}
+	elsif($pid == 0){
+		# this child's reason for existence is to delete the file being sent to aws without holding up the cpu intensive encryption process.
+		waitpid($oldpid,0);
 		unlink($fpath);
 		exit(0);
 	}
@@ -157,22 +321,106 @@ sub cp_to_aws{
 	}
 }
 
+=pod
+
+---++ compress_zfs_send
+
+Compress zfs with bzip2 -c
+
+Return a file handle, on which a checksum and encryption operation is to take place
+
+=cut
+
+sub compress_zfs_send {
+	my $this = shift;
+	my $sendpath = shift;
+	
+	my ($fhzfsout,$fhbzipin,$fhbzipout,$fhreturn);
+	pipe($fhbzipin,$fhzfsout);
+	pipe($fhreturn,$fhbzipout);
+
+	my $sendpid = fork();
+	if($sendpid > 0){
+		# parent
+		$this->add_pid($sendpid);
+	}
+	elsif($sendpid == 0){
+		close($fhbzipin);
+		close($fhbzipout);
+		close($fhreturn);
+		
+		# child, stdout=$fhzfsout
+		STDOUT->fdopen( $fhzfsout, 'w' ) or die $!;
+		exec('/sbin/zfs','send',$sendpath);
+		exit(1);
+	}
+	else{
+		die "failed to for for bzip2 ";
+	}	
+
+	my $compresspid = fork();
+	if($compresspid > 0){
+		# parent
+		$this->add_pid($compresspid);
+	}
+	elsif($compresspid == 0){
+		# child
+		close($fhzfsout);
+		close($fhreturn);	
+		# stdin=$fsbzipin, stdout=$fhbzipout
+		STDIN->fdopen( $fhbzipin,  'r' ) or die $!;
+		STDOUT->fdopen( $fhbzipout, 'w' ) or die $!;
+		exec('/bin/bzip2','-c');
+		exit(1);
+	}
+	else{
+		die "failed to for for bzip2 ";
+	}
+	close($fhbzipin);
+	close($fhbzipout);
+	close($fhzfsout);
+	
+	
+	return $fhreturn;
+}
+
+=pod
+
+---++ decompress_zfs_receive
+
+bzcat
+
+=cut
+
+=pod
+
+---++ backup_full($zfs_filesystem,$date)
+
+$zfs_filesystem is formatted with underscores (_) in place of forward slashes (/);
+
+
+=cut
 
 sub backup_full {
+	my $this = shift;
+	
 	my ($fs,$date) = (shift,shift);
+	
 	my $zfspath = $fs;
 	$zfspath =~ s/_/\//g;
 	print STDERR "zfs backup($zfspath,$date)\n";
 	# fullzfsbackup(.*)_(\d{4})(\d{2})(\d{2})
 	print STDERR "...s3path=fullzfsbackup".$zfspath."_".$date."\n";
 	#encrypt_txt('/tmp/test',generate_random_key(32));
-	open(my $fh, "-|",'/sbin/zfs','send',$zfspath.'@'.$date) || die "cannot do zfs backup";
-	open(my $fhout,'>','/var/backup/'.$fs.'_'.$date) || die "cannot write zfs to disk";
+	#open(my $fh, "-|",'/sbin/zfs','send',$zfspath.'@'.$date) || die "cannot do zfs backup";
+	my $fh = $this->compress_zfs_send($zfspath.'@'.$date);
+	
+	open(my $fhout,'>',$this->tmppath.$fs.'_'.$date) || die "cannot write zfs to disk";
 	my $i = 0;
 	my $buf;
 	my $sha = Digest::SHA->new(256);
-	my $key = generate_random_key(32);
-	my $cipher = get_symmetric_cipher($key);
+	my $key = $this->generate_random_key(32);
+	my $cipher = $this->get_symmetric_cipher($key);
 	$cipher->start('encrypting');
 	while($i = sysread($fh,$buf,8192)){
 		# encrypt then get checksum
@@ -191,42 +439,41 @@ sub backup_full {
 	my $checksum = $sha->digest();
 	print STDERR "Length of check sum for $fs is ".length($checksum)." and key length =".length($key)."\n";
 	# format= [4 bytes][checksum][4 bytes][key]
-	encrypt_txt('/var/backup/'.$fs.'_'.$date.'.gpg',pack('L',length($checksum )).$checksum.pack('L',length($key )).$key  );
-	cp_to_aws('/var/backup/'.$fs.'_'.$date,$fs.'_'.$date);
-	cp_to_aws('/var/backup/'.$fs.'_'.$date.'.gpg',$fs.'_'.$date.'.gpg');
+	$this->encrypt_txt($this->tmppath.'/'.$fs.'_'.$date.'.gpg',pack('L',length($checksum )).$checksum.pack('L',length($key )).$key  );
+	cp_to_aws($this->tmppath.'/'.$fs.'_'.$date,$fs.'_'.$date);
+	cp_to_aws($this->tmppath.'/'.$fs.'_'.$date.'.gpg',$fs.'_'.$date.'.gpg');
 
-	# /sbin/zfs send $fs@$date | tee /var/backup/$fs_$date | sha256sum - > /var/backup/$
-#	system("/sbin/zfs send $zfspath\@$date | tee /var/backup/$fs_$date | sha256sum - > /var/backup/$fs_$date.checksum ") 		|| die "failed to run zfs send";
-
-	#system('/usr/local/bin/aws','s3','') || die "failed to run backup";	
 }
 
 #incrementalzfsbackup(.*)_(\d{4})(\d{2})(\d{2})_(\d{4})(\d{2})(\d{2})
 
 sub calculate_full {
+	my $this = shift;
 	my ($snaplocal,$snapaws) = (shift,shift);
 	my $data = [];
 	# find the first element of all zfs filesystem
 	return undef unless defined $snaplocal && ref($snaplocal) eq 'HASH';
+	# The format of $fs is tank_sub1_sub2 
 	foreach my $fs (keys %{$snaplocal}){
 		print STDERR "$fs\n";
 		if(defined $snapaws->{'full'}->{$fs} && defined $snapaws->{'full'}->{$fs}->{$snaplocal->{$fs}->[0]}  ){
 			print STDERR "...Full defined\n";
 		}
 		else{
-			backup_full($fs,join('',@{$snaplocal->{$fs}->[0]}));
+			$this->backup_full($fs,join('',@{$snaplocal->{$fs}->[0]}));
 		}
 	}
 	return $data;
 }
 
 sub run_backup {
-	my $snapshots_local = extract_zfs_snapshots();
-
-	my $snapshots_aws = extract_aws_content();
-
+	my $this = shift;
+	
 	# find out new full snapshots to take
-	my $required_full = calculate_full($snapshots_local,$snapshots_aws);
+	my $required_full = $this->calculate_full(
+		$this->extract_zfs_snapshots(),
+		$this->extract_aws_content()
+	);
 
 
 	# find out new incremental snaphosts
@@ -246,6 +493,35 @@ Usage: ./recover.pl /tmp/checksumfile /tmp/snapshotfile
 =cut
 
 sub get_options {
+	my @args = @_;
+	my $func = shift(@args);
+	if($func eq 'recover'){
+		return get_options_recover(@args);
+	}
+	elsif($func eq 'backup'){
+		return get_options_backup(@args);
+	}
+	else{
+		die "bad options";
+	}
+}
+
+sub get_options_backup {
+	my @args = @_;
+	
+	# read conf file
+	my $path = '/etc/zfsbackup/backup.conf';
+	die " no conf file exists" unless -f $path;
+	open(my $fh, '<',$path) || die "cannot open file";
+	my $x = '';
+	while(<$fh>){ $x .= $_;}
+	close($fh);
+	
+	return JSON::XS::decode_json($x);
+}
+
+
+sub get_options_recover {
 	my @args = @_;
 	my $data = {};
 	die " no clear text key and checksum file" unless -f $args[0];
