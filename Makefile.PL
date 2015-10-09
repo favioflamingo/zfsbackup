@@ -32,24 +32,7 @@ WriteMakefile(
     dist  => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
     clean => { FILES => 'Backup-ZFSonAWS-*' }
 );
-sub MY::makefile { 
-	return << "EOF";
-INST_ETC        = blib/etc
-DESTINSTALLETC = \$(DESTDIR)/etc
-# This target is used by both CPAN and Debian builds
-config::
-        $(MKPATH) $(INST_ETC)
- 
-# This target is used by both CPAN and Debian builds
-pure_all::
-	$(CP) -r etc/* $(INST_ETC)
- 
-# This target is used only by CPAN builds; Debian uses debian/conffiles
-pure_install:: all
-        $(MKPATH) $(DESTINSTALLETC)/$(NAME)
-        $(CP) -r $(INST_ETC)/* $(DESTINSTALLETC)/$(NAME)
-EOF
 
- }
+sub MY::makefile { '' }
 
 

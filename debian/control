@@ -1,0 +1,25 @@
+Source: libbackup-zfsons3-perl
+Section: perl
+Priority: optional
+Maintainer: Joel DeJesus <dejesus.joel@e-flamingo.jp>
+Uploaders: Joel DeJesus <dejesus.joel@e-flamingo.jp>
+Build-Depends: debhelper (>= 9.20120312~),
+ libcrypt-openssl-aes-perl,
+ libextutils-pkgconfig-perl,
+ libdigest-sha-perl,
+ libjson-xs-perl,
+ perl
+Standards-Version: 3.9.6
+Vcs-Browser: https://anonscm.debian.org/cgit/pkg-perl/packages/libev-glib-perl.git
+Vcs-Git: git://anonscm.debian.org/pkg-perl/packages/libev-glib-perl.git
+Homepage: https://github.com/favioflamingo/zfsbackup
+
+Package: libbackup-zfsons3-perl
+Architecture: any
+Depends: ${misc:Depends}, ${perl:Depends}, ${shlibs:Depends},
+ libcrypt-openssl-aes-perl,
+ libextutils-pkgconfig-perl,
+ libdigest-sha-perl,
+ libjson-xs-perl
+Description: Backup::ZFSonS3
+ Lets users back up zfs snapshots onto Amazon S3.
