@@ -71,3 +71,14 @@ For configuration, create a file at /etc/zfsbackup/backup.conf that looks like:
 }
 ```
   * For the recipient, make sure the email address matches the gpg key imported in step 4.
+  
+  
+## Debian Package
+
+Do the following to get a debian package:
+```bash
+cd ./zfsons3
+dh_make -p libbackup-zfsons3-perl_0.1 -e dejesus.joel@e-flamingo.jp --createorig -l
+debuild -S -uc
+debuild -b -uc
+```
