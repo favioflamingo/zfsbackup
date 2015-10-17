@@ -447,16 +447,23 @@ sub do_full_snapshot {
 	my $this = shift;
 	my ($snaplocal,$snapaws) = (shift,shift);
 	my $data = [];
+	
+	#require Data::Dumper;
+	#my $xo = Data::Dumper::Dumper($snaplocal);
+	#my $yo = Data::Dumper::Dumper($snapaws);
+	#print STDERR "Local=$xo\n---\nAWS=$yo\n";
+	
 	# find the first element of all zfs filesystem
 	return undef unless defined $snaplocal && ref($snaplocal) eq 'HASH';
 	# The format of $fs is tank_sub1_sub2 
 	foreach my $fs (keys %{$snaplocal}){
 		print STDERR "$fs\n";
-		if(defined $snapaws->{'full'}->{$fs} && defined $snapaws->{'full'}->{$fs}->{$snaplocal->{$fs}->[0]}  ){
+		if(defined $snapaws->{'full'}->{$fs} && defined $snapaws->{'full'}->{$fs}->{join('',@{$snaplocal->{$fs}->[0]})}  ){
 			print STDERR "...Full defined\n";
 		}
 		else{
-			$this->backup_full($fs,join('',@{$snaplocal->{$fs}->[0]}));
+			print STDERR "..do full backup\n";
+			#$this->backup_full($fs,join('',@{$snaplocal->{$fs}->[0]}));
 		}
 	}
 	return $data;
