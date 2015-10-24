@@ -26,6 +26,10 @@ elsif($options->{'function'} eq 'recover'){
 	print STDERR "Doing recovery, decrypting snapshot now.\n";
 	$obj->decrypt_snapshot($options->{'checksumfile'},$options->{'snapshotfile'});
 }
+elsif($options->{'function'} eq 'reset'){
+	print STDERR "Reseting full snapshots.\n";
+	$obj->reset_snapshots();
+}
 
 
 __END__

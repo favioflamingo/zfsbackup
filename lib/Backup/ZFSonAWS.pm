@@ -8,6 +8,7 @@ use Data::Dumper;
 use Crypt::CBC;
 use Digest::SHA qw(sha256_hex);
 use JSON::XS;
+use Date::Calc;
 
 =head1 NAME
 
@@ -19,7 +20,7 @@ Version 0.01
 
 =cut
 
-our $VERSION = '0.01';
+our $VERSION = '0.1';
 
 
 =head1 SYNOPSIS
@@ -133,18 +134,13 @@ sub add_pid {
 		$pid = $1;
 	}
 	unless(defined $this->{'children'}){
-		$this->{'children'} = {};
+		$this->{'children'} = [];
 	}
-	
-	$this->{'children'}->{$pid} = 1;
-	return scalar(keys %{$this->{'children'}});
+	push(@{$this->{'children'}},$pid);
+
+	return scalar(@{$this->{'children'}});
 }
 
-sub remove_pid {
-	my $this = shift;
-	my $pid = shift;
-	delete $this->{'children'}->{$pid};
-}
 
 
 =pod
@@ -163,13 +159,29 @@ When it is time to kill this object, we need to wait for all child processes to 
 =cut
 
 sub wait_for_children{
+	use POSIX;
 	my $this = shift;
+	
+	unless(defined $this->{'children'}){
+		$this->{'children'} = [];
+	}
+	
+	
+	my @still_going;
 	while(scalar(@{$this->{'children'}}) > 0){
 		my $latestpid = shift(@{$this->{'children'}});
 		warn "Waiting for $latestpid to exit";
-		waitpid($latestpid,0);
+		
+		my $reaped = waitpid $latestpid => WNOHANG;
+		if ($reaped == $latestpid) {
+			warn "$latestpid is already gone.\n";
+		} else {
+			warn "$latestpid is still running.\n";
+			push(@still_going,$latestpid);
+		}
 	}
-	warn "All children have exited";
+	$this->{'children'} = \@still_going;
+	
 }
 
 
@@ -312,7 +324,7 @@ sub cp_to_aws{
 
 =pod
 
----++ compress_zfs_send
+---++ compress_zfs_send($sendpath,$relpath)
 
 Compress zfs with bzip2 -c
 
@@ -325,6 +337,15 @@ This implements the equivalent bash command: zfs send tank/example | bzip2 -c, a
 sub compress_zfs_send {
 	my $this = shift;
 	my $sendpath = shift;
+	my $relpath = shift;
+	
+	if(defined $relpath){
+		print STDERR "Running zfs send -i $relpath $sendpath\n";
+	}
+	else{
+		print STDERR "Running zfs send $sendpath\n";
+	}
+	
 	
 	my ($fhzfsout,$fhbzipin,$fhbzipout,$fhreturn);
 	pipe($fhbzipin,$fhzfsout);
@@ -343,12 +364,20 @@ sub compress_zfs_send {
 		# child, stdout=$fhzfsout
 		open (STDOUT, '>&', $fhzfsout);
 		#STDOUT->fdopen( $fhzfsout, 'w' ) or die $!;
-		exec('/sbin/zfs','send',$sendpath);
+		
+		if(defined $relpath){
+			exec('/sbin/zfs','send','-i',$relpath,$sendpath);
+		}
+		else{
+			exec('/sbin/zfs','send',$sendpath);			
+		}
+		
+		
 		exit(1);
 	}
 	else{
 		die "failed to for for bzip2 ";
-	}	
+	}
 
 	my $compresspid = fork();
 	if($compresspid > 0){
@@ -401,6 +430,10 @@ sub backup_full {
 	
 	my ($fs,$date) = (shift,shift);
 	
+	# check to see if anyone has exited already
+	$this->wait_for_children();
+	
+	
 	my $zfspath = $fs;
 	$zfspath =~ s/_/\//g;
 	print STDERR "zfs backup($zfspath,$date)\n";
@@ -446,12 +479,14 @@ sub backup_full {
 sub do_full_snapshot {
 	my $this = shift;
 	my ($snaplocal,$snapaws) = (shift,shift);
-	my $data = [];
+	
+	
 	
 	#require Data::Dumper;
 	#my $xo = Data::Dumper::Dumper($snaplocal);
 	#my $yo = Data::Dumper::Dumper($snapaws);
 	#print STDERR "Local=$xo\n---\nAWS=$yo\n";
+	#print STDERR "AWS=$yo\n";
 	
 	# find the first element of all zfs filesystem
 	return undef unless defined $snaplocal && ref($snaplocal) eq 'HASH';
@@ -460,16 +495,87 @@ sub do_full_snapshot {
 		print STDERR "$fs\n";
 		if(defined $snapaws->{'full'}->{$fs} && defined $snapaws->{'full'}->{$fs}->{join('',@{$snaplocal->{$fs}->[0]})}  ){
 			print STDERR "...Full defined\n";
+			
+			# search increments
+			# 
+			# $snapaws->{'incremental'}->{$fs}->{join('',@{$snaplocal->{$fs}->[0]})}->{}
+			foreach my $i (1..(scalar(@{$snaplocal->{$fs}})-1) ){
+				next if defined $snapaws->{'incremental'}->{$fs}->{join('',@{$snaplocal->{$fs}->[$i-1]})}
+					&& $snapaws->{'incremental'}->{$fs}->{join('',@{$snaplocal->{$fs}->[$i-1]})}->{join('',@{$snaplocal->{$fs}->[$i]})};
+				$this->do_incremental_snapshots($fs, join('',@{$snaplocal->{$fs}->[$i-1]}), join('',@{$snaplocal->{$fs}->[$i]})  );
+				
+				
+				system('/sbin/zfs','destroy',$fs.'@'.join('',@{$snaplocal->{$fs}->[$i-1]}));
+			}
 		}
 		else{
 			print STDERR "..do full backup\n";
-			#$this->backup_full($fs,join('',@{$snaplocal->{$fs}->[0]}));
+			$this->backup_full($fs,join('',@{$snaplocal->{$fs}->[0]}));
 		}
 	}
-	return $data;
+	
+	return [$snaplocal,$snapaws];
 }
 
 
+
+=pod
+
+
+---++ do_incremental_snapshots($fs,$from,$to)
+
+Basically, run zfs send -R -i $fs@$from $fs@$to
+
+=cut
+
+sub do_incremental_snapshots {
+	my $this = shift;
+	
+	my ($fs,$fromdate,$todate) = (shift,shift,shift);
+	
+	# check to see if any child processes have exited already
+	$this->wait_for_children();
+	
+	my $zfspath = $fs;
+	$zfspath =~ s/_/\//g;
+	print STDERR "zfs backup($zfspath,$fromdate,$todate)\n";
+	# fullzfsbackup(.*)_(\d{4})(\d{2})(\d{2})
+	print STDERR "...s3path=incrementalzfsbackup".$zfspath."_".$fromdate."_".$todate."\n";
+	#return undef;
+	
+	#encrypt_txt('/tmp/test',generate_random_key(32));
+	#open(my $fh, "-|",'/sbin/zfs','send',$zfspath.'@'.$date) || die "cannot do zfs backup";
+	my $fh = $this->compress_zfs_send($zfspath.'@'.$todate,$zfspath.'@'.$fromdate);
+	die "bad file handle from compress_zfs_send" unless defined $fh && fileno($fh) > 0;
+	
+	open(my $fhout,'>',$this->tmppath.'/'.$fs.'_'.$fromdate.'_'.$todate) || die "cannot write zfs to disk";
+	my $i = 0;
+	my $buf;
+	my $sha = Digest::SHA->new(256);
+	my $key = $this->generate_random_key(32);
+	my $cipher = $this->get_symmetric_cipher($key);
+	$cipher->start('encrypting');
+	while($i = sysread($fh,$buf,8192)){
+		# encrypt then get checksum
+		$buf = $cipher->crypt($buf);
+		$sha->add($buf);
+		my $x = syswrite($fhout,$buf);
+		die "failed to write out" unless $x == length($buf);
+	}
+	$buf = $cipher->finish();
+	$sha->add($buf);
+	my $x2 = syswrite($fhout,$buf);
+	die "failed to write out" unless $x2 == length($buf);
+	close($fhout);
+	close($fh);
+
+	my $checksum = $sha->digest();
+	print STDERR "Length of check sum for $fs is ".length($checksum)." and key length =".length($key)."\n";
+	# format= [4 bytes][checksum][4 bytes][key]
+	$this->encrypt_txt($this->tmppath.'/'.$fs.'_'.$fromdate.'_'.$todate.'.gpg',pack('L',length($checksum )).$checksum.pack('L',length($key )).$key  );
+	$this->cp_to_aws($this->tmppath.'/'.$fs.'_'.$fromdate.'_'.$todate,'incrementalzfsbackup'.$fs.'_'.$fromdate.'_'.$todate);
+	$this->cp_to_aws($this->tmppath.'/'.$fs.'_'.$fromdate.'_'.$todate.'.gpg','incrementalzfsbackup'.$fs.'_'.$fromdate.'_'.$todate.'.gpg');
+}
 
 
 =pod
@@ -490,6 +596,9 @@ sub get_options {
 	elsif($func eq 'backup'){
 		return get_options_backup(@args);
 	}
+	elsif($func eq 'reset'){
+		return get_options_reset(@args);
+	}
 	else{
 		die "bad options";
 	}
@@ -503,17 +612,24 @@ sub read_config_file {
 	while(<$fh>){ $x .= $_;}
 	close($fh);
 	
-	my $data = JSON::XS::decode_json($x);
-	$data->{'function'} = 'backup';
-	return $data;	
+	return JSON::XS::decode_json($x);	
 }
 
 
 sub get_options_backup {
 	my @args = @_;
-	
+	my $data = read_config_file(); 
+	$data->{'function'} = 'backup';
 	# read conf file
-	return read_config_file();
+	return $data;
+}
+
+sub get_options_reset{
+	my @args = @_;
+	my $data = read_config_file(); 
+	$data->{'function'} = 'reset';
+	# read conf file
+	return $data;
 }
 
 
@@ -541,8 +657,8 @@ sub run_backup {
 	#die "XO=$xo\n\nYO=$yo";
 	
 	
-	# find out new full snapshots to take
-	my $required_full = $this->do_full_snapshot(
+	# find out new full snapshots to take, and run the full snapshot backup
+	my $required_incremental = $this->do_full_snapshot(
 		$this->extract_zfs_snapshots(),
 		$this->extract_aws_content()
 	);
@@ -555,6 +671,91 @@ sub run_backup {
 
 }
 
+=pod
+
+---+ Reset
+
+Start a new series of backups, whereby the full snapshot is set for today.
+
+   1. Delete all snapshots.
+   
+   
+ {
+          'storage-space_kvm-virts_tor01' => [
+                                               [
+                                                 '2015',
+                                                 '10',
+                                                 '02'
+                                               ],
+ 
+ 
+ 
+=cut
+
+sub reset_snapshots {
+	my $this = shift;
+	
+	my $ref = $this->extract_zfs_snapshots();
+
+	die "could not find any snapshots used in backups\n" unless 
+		defined $ref && ref($ref) eq 'HASH';
+	
+	foreach my $fs (sort keys %{$ref}){
+		print STDERR "Resetting $fs\n";
+		next unless defined $ref->{$fs} && ref($ref->{$fs}) eq 'ARRAY';
+		
+		foreach my $i (0..(scalar(@{$ref->{$fs}})-1)  ){
+			$this->wait_for_children();
+			
+			next unless
+				defined $ref->{$fs}->[$i] && ref($ref->{$fs}->[$i]) eq 'ARRAY' && scalar(@{$ref->{$fs}->[$i]}) == 3;
+			
+			print STDERR "Deleting snapshot ".$fs.'@'.join('',@{$ref->{$fs}->[$i]})."\n";
+			
+			$this->delete_snapshot($fs,join('',@{$ref->{$fs}->[$i]})   );
+			
+			sleep 3;
+		}
+		
+		
+	}
+	
+}
+
+=pod
+
+---++ delete_snapshot($fs,$date)
+
+Delete the zfs snapshot.
+
+=cut
+
+sub delete_snapshot {
+	my $this = shift;
+	my $fs = shift;
+	my $date = shift;
+	
+	die "bad format for file system" unless defined $fs && $fs =~ m/^([0-9a-zA-Z\_\-]+)$/;
+	die "bad format for date" unless defined $date && $date =~ m/^(\d+)$/;
+	
+	$fs =~ s/_/\//g;
+	
+	my $pid = fork();
+	
+	if($pid > 0){
+		# parent
+		$this->add_pid($pid);
+	}
+	elsif($pid == 0){
+		# child
+		exec('/sbin/zfs','destroy',$fs.'@'.$date);
+		exit(1);
+	}
+	else{
+		die "could not fork to do exec";
+	}
+	
+}
 
 
 =pod

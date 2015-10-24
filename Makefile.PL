@@ -20,7 +20,8 @@ WriteMakefile(
         'Digest::SHA' => 0,
         'Data::Dumper' => 0,
         'Digest::SHA' => 0,
-        'JSON::XS' => 0
+        'JSON::XS' => 0,
+        'Date::Calc' => 0
     },
     'EXE_FILES' => [
 		'scripts/zfsonaws'
